@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voicesmith"
+version = "0.1.0"
+description = "Local, consent-first voice cloning that adapts to your hardware, scores its own output, and plugs into coding agents."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.14"
+authors = [{ name = "Fergus O'Reilly" }]
+keywords = ["voice cloning", "tts", "text-to-speech", "speech", "mcp", "agents", "watermark"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+# The core never imports PyTorch. Heavy synthesis engines live in their own
+# uv-managed environments and talk to the core over a small JSON-lines protocol.
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.11",
+  "soundfile>=0.12.1",
+  "sherpa-onnx>=1.13.8,<2",
+  "psutil>=5.9",
+  "typer>=0.12",
+  "rich>=13.7",
+  "uv>=0.9",
+  "yt-dlp[default]>=2026.8.19",
+  "imageio-ffmpeg>=0.6",
+  "fastmcp>=3,<5",
+  "sounddevice>=0.5",
+]
+
+[project.optional-dependencies]
+c2pa = ["c2pa-python>=0.38"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+voicesmith = "voicesmith.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/fergo5002/voicesmith"
+Issues = "https://github.com/fergo5002/voicesmith/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voicesmith"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/voicesmith", "README.md", "LICENSE", "AGENTS.md", "RESPONSIBLE_USE.md", "skills", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "slow: needs downloaded models or an installed engine (deselect with -m 'not slow')",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B905", "B008"]
