@@ -71,6 +71,10 @@ def worker_env() -> dict[str, str]:
             "TOKENIZERS_PARALLELISM": "false",
             "TRANSFORMERS_NO_ADVISORY_WARNINGS": "1",
             "PYTHONWARNINGS": "ignore",
+            # AudioSeal's vendored moshi code calls torch.compile, which needs a C++
+            # compiler most Windows machines do not have. Never require one.
+            "NO_TORCH_COMPILE": "1",
+            "TORCHDYNAMO_DISABLE": "1",
         }
     )
     env.pop("VIRTUAL_ENV", None)
