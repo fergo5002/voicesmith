@@ -3,7 +3,7 @@
 Local voice cloning that asks for consent, picks its own best settings for each voice, checks every take before you hear it, and plugs straight into coding agents.
 
 ```bash
-uv tool install voicesmith
+uv tool install git+https://github.com/fergo5002/voicesmith
 voicesmith doctor
 voicesmith engines install recommended
 ```
@@ -19,8 +19,8 @@ voicesmith engines install recommended
 ## Quick start
 
 ```bash
-# 1. Install (needs Python 3.10 to 3.13; uv fetches one if you lack it)
-uv tool install voicesmith
+# 1. Install (needs Python 3.10 to 3.13; uv fetches one if you lack it. No uv? https://docs.astral.sh/uv/)
+uv tool install git+https://github.com/fergo5002/voicesmith
 voicesmith doctor                       # checks ffmpeg, models, hardware, and tells you how to fix anything
 voicesmith engines install recommended  # Chatterbox; adds Qwen3-TTS on NVIDIA machines
 
