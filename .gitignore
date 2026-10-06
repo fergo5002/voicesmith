@@ -12,3 +12,4 @@ build/
 *.mp3
 *.m4a
 !tests/fixtures/*.wav
+!tests/fixtures/*.flac
