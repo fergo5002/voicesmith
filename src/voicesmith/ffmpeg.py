@@ -156,14 +156,33 @@ def read_metadata(path: str | Path) -> dict[str, str]:
     if str(path).lower().endswith((".ogg", ".opus")):
         # Opus tags live on the stream, which ffmetadata cannot dump; read them from the banner.
         banner = run(["-i", str(path), "-f", "null", "-"]).stderr.decode("utf-8", "replace")
-        for m in re.finditer(r"^\s{6,}(\w+)\s*:\s?(.*)$", banner, re.M):
-            meta.setdefault(m.group(1).strip().lower(), m.group(2).strip())
+        for key, value in banner_tags(banner).items():
+            meta.setdefault(key, value)
     for line in text.splitlines():
         if not line or line.startswith((";", "[")) or "=" not in line:
             continue
         key, value = line.split("=", 1)
         meta[key.strip().lower()] = value.replace("\\=", "=").replace("\\;", ";").strip()
     return meta
+
+
+_BANNER_TAG = re.compile(r"^[ \t]{4,}([A-Za-z0-9_]+)[ \t]*:[ \t]?([^\r\n]*)\r?$", re.M)
+
+
+def banner_tags(banner: str) -> dict[str, str]:
+    """Tag lines from ffmpeg's input banner (``key : value`` under a ``Metadata:`` header).
+
+    Matches spaces and tabs only, never newlines: builds indent differently, and a
+    whitespace class that included newlines swallowed the line after ``Metadata:``
+    on Linux and macOS.
+    """
+    out: dict[str, str] = {}
+    for m in _BANNER_TAG.finditer(banner):
+        key, value = m.group(1).lower(), m.group(2).strip()
+        if key in ("metadata", "duration", "stream") or not value:
+            continue
+        out.setdefault(key, value)
+    return out
 
 
 def capabilities() -> dict[str, bool]:

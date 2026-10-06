@@ -34,3 +34,27 @@ def test_decode_and_loudness(src):
 def test_unknown_format_is_refused(src, tmp_path):
     with pytest.raises(ValueError):
         ffmpeg.encode(src, tmp_path / "o.xyz", TAGS)
+
+
+WINDOWS_BANNER = """Input #0, ogg, from 'o.ogg':
+  Duration: 00:00:02.01, start: 0.000000, bitrate: 117 kb/s
+  Stream #0:0: Audio: opus, 48000 Hz, mono, fltp
+    Metadata:
+      encoder         : Lavc62.28.102 libopus
+      comment         : AI-generated voice made with voicesmith. Not a live recording.
+"""
+
+LINUX_BANNER = """Input #0, ogg, from 'o.ogg':
+  Duration: 00:00:02.01, start: 0.000000, bitrate: 117 kb/s
+  Stream #0:0: Audio: opus, 48000 Hz, mono, fltp
+      Metadata:
+        encoder         : Lavc60.31.102 libopus
+        comment         : AI-generated voice made with voicesmith. Not a live recording.
+"""
+
+
+@pytest.mark.parametrize("banner", [WINDOWS_BANNER, LINUX_BANNER, WINDOWS_BANNER.replace("\n", "\r\n")])
+def test_banner_tags_read_both_indent_styles(banner):
+    tags = ffmpeg.banner_tags(banner)
+    assert tags["comment"].startswith("AI-generated voice")
+    assert "metadata" not in tags and "duration" not in tags
