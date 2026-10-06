@@ -4,26 +4,27 @@
 
 voicesmith turns recordings you already have (podcasts, videos, voice notes, a YouTube link) into a voice that Claude Code, Codex, Cursor or your own scripts can speak in. Nothing leaves your machine. It is fussy on purpose: every take gets transcribed and voice-matched before you hear it, and nothing renders at all until the person whose voice it is has said yes.
 
-A real run, from a copy installed straight from this repo:
+A real run, from a copy installed straight from this repo, on a CPU-only laptop (only the file paths are shortened):
 
 ```console
-$ voicesmith say reader1089 "This was rendered by the copy installed straight from GitHub." -o live.m4a
-loading Sopro V2 Turbo (Halo Research)
-rendering 1 part(s) with reference ref02
-part 1/1 take 1: q=0.93
-mastering, watermarking and verifying
+$ voicesmith say reader1089 "This was rendered by the copy installed straight from GitHub." --engine sopro --quality fast -o live.ogg -o live.m4a
+14:48:22 loading Sopro V2 Turbo (Halo Research)
+14:48:39 rendering 1 part(s) with reference ref02
+14:48:55 part 1/1 take 1: q=0.93
+14:48:55 mastering, watermarking and verifying
+wrote live.ogg
 wrote live.m4a
-3.6s of audio in 43s with sopro (1 take(s)); similarity 0.874, word error 0.0%.
+3.6s of audio in 43s with sopro (1 take(s)); similarity 0.874, word error 0.0%. Manifest: live.voicesmith.json
 ```
 
 ## Why it's different
 
-- **It does the tedious bit for you.** Give it an hour of podcast. It finds the speech, works out who is talking, sets aside the co-host, drops anything with music, laughter, applause or crosstalk, and keeps a varied handful of the cleanest clips of the right person. If two people talk about equally and you haven't said which one you mean, it stops and asks instead of guessing.
-- **It auditions itself.** `voicesmith tune` puts every engine you have installed up against the best clips and keeps whichever sounds most like the person. You do that once per voice; every message after reuses the winner.
+- **It does the tedious bit for you.** Give it a podcast. It finds the speech, works out who is talking, sets aside the co-host, drops clips with music, laughter, applause or background chatter, and keeps a varied handful of the cleanest clips of the right person. If two people talk about equally and you haven't said which one you mean, it stops and asks instead of guessing.
+- **It auditions itself.** `voicesmith tune` tries each installed engine that suits your machine and language against the best clips, and keeps the best-scoring engine and clip (mostly likeness, plus getting the words right). You do that once per voice; later renders use the winner unless you ask for speed with `--quality fast`.
 - **It is its own harshest critic.** Each take is transcribed and voice-matched. Dropped words, loops, trailing off, long dead air, or a voice drifting towards someone else's: binned and re-rendered before you hear anything.
-- **Consent or nothing.** A voice will not render until its owner has read a consent statement with a one-off code (checked by speech recognition and voice match), or you have recorded who authorised it and how. Agents can use voices; they can never grant consent.
-- **It signs its work.** Every file carries an inaudible AudioSeal watermark and "AI-generated" tags, and is decoded and re-checked after encoding. If either did not survive, the file is not delivered. `voicesmith verify` checks any file.
-- **Your agent can use it.** One command adds it to Claude Code, Codex or Cursor as an MCP server, so your assistant can send you voice notes in a voice you chose.
+- **Consent or nothing.** A voice will not render until its owner has read a consent statement with a one-off code (checked by speech recognition and voice match), or you have recorded who authorised it and how. Through the MCP server, agents can use voices but cannot grant consent.
+- **It signs its work.** Every file carries an AudioSeal watermark and "AI-generated" tags, and is decoded and re-checked after encoding. If either did not survive, the file is not delivered. `voicesmith verify` checks any file.
+- **Your agent can use it.** One command adds it to Claude Code or Codex as an MCP server (Cursor takes a short config entry), so your assistant can make you voice notes in a voice you chose.
 - **Built for ordinary laptops.** The core needs no GPU or PyTorch. Each engine gets the right PyTorch build for your machine (CUDA, Apple Silicon or CPU). So far it has been measured on a CPU-only Windows laptop; see [the benchmarks](docs/benchmarks.md) for honest numbers.
 
 ## Give your AI a voice
@@ -31,12 +32,13 @@ wrote live.m4a
 ```bash
 uv tool install git+https://github.com/fergo5002/voicesmith    # no uv? https://docs.astral.sh/uv/
 voicesmith doctor                                               # checks everything, tells you how to fix it
-voicesmith engines install recommended                          # a few GB, once
+voicesmith engines install recommended                          # engine weights (several GB) download on first use
 
-claude mcp add voicesmith -- voicesmith mcp                     # Claude Code (Codex and Cursor below)
+claude mcp add --scope user voicesmith -- voicesmith mcp        # Claude Code
+codex mcp add voicesmith -- voicesmith mcp                      # Codex (Cursor: see below)
 ```
 
-Then set up a voice (yours is the obvious first one) with the five steps below, and ask your agent to "send me a voice note saying the tests passed".
+Then set up a voice (yours is the obvious first one) with the five steps below, and ask your agent for "a voice note saying the tests passed".
 
 ## Quick start
 
@@ -70,13 +72,13 @@ Every render writes `<name>.voicesmith.json` next to the audio with the scores, 
 
 ## Use it from an agent
 
-**Claude Code**
+**Claude Code** (`--scope user` makes it available in every project, not just the current folder)
 
 ```bash
-claude mcp add voicesmith -- voicesmith mcp
+claude mcp add --scope user voicesmith -- voicesmith mcp
 ```
 
-**Codex** (`~/.codex/config.toml`)
+**Codex**: `codex mcp add voicesmith -- voicesmith mcp`, or add it to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.voicesmith]

@@ -6,7 +6,7 @@ voicesmith makes convincing copies of real people's voices. Used well, that give
 
 - **No consent, no audio.** A voice cannot render until it has a consent record: a spoken statement with a one-off code, read by the speaker and checked by speech recognition and voice match, or a written attestation by the operator naming who authorised it and how.
 - **Spoken consent must match the voice.** If the person who read the consent statement does not sound like the voice's references, rendering is blocked.
-- **Agents cannot grant consent.** The MCP server can read consent status and tell a human what to do. It has no tool that creates or edits consent.
+- **Agents cannot grant consent through the MCP server.** It can read consent status and tell a human what to do, but has no tool that creates or edits consent. An agent with shell access could still run the CLI, so the bundled agent skill forbids it: the consent commands are for the human operator alone.
 - **Every output is marked.** An AudioSeal watermark is embedded in every file, Chatterbox engines add their own PerTh mark, and every file carries disclosure tags saying it is AI-generated and was not recorded live. Delivered files are decoded and re-checked; if the watermark or tags are missing, the file is deleted rather than delivered.
 - **Revocation works.** `voicesmith consent revoke <voice>` stops the voice rendering immediately.
 
