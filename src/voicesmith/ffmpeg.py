@@ -151,14 +151,13 @@ def encode(src: str | Path, dst: str | Path, metadata: dict[str, str] | None = N
 
 def read_metadata(path: str | Path) -> dict[str, str]:
     proc = run(["-i", str(path), "-f", "ffmetadata", "-"])
-    text = proc.stdout.decode("utf-8", "replace")
     meta: dict[str, str] = {}
     if str(path).lower().endswith((".ogg", ".opus")):
-        # Opus tags live on the stream, which ffmetadata cannot dump; read them from the banner.
-        banner = run(["-i", str(path), "-f", "null", "-"]).stderr.decode("utf-8", "replace")
-        for key, value in banner_tags(banner).items():
+        # Opus tags live on the stream, which ffmetadata cannot dump, but ffmpeg
+        # prints them in the input banner of this same run.
+        for key, value in banner_tags(proc.stderr.decode("utf-8", "replace")).items():
             meta.setdefault(key, value)
-    for line in text.splitlines():
+    for line in proc.stdout.decode("utf-8", "replace").splitlines():
         if not line or line.startswith((";", "[")) or "=" not in line:
             continue
         key, value = line.split("=", 1)
@@ -166,22 +165,40 @@ def read_metadata(path: str | Path) -> dict[str, str]:
     return meta
 
 
-_BANNER_TAG = re.compile(r"^[ \t]{4,}([A-Za-z0-9_]+)[ \t]*:[ \t]?([^\r\n]*)\r?$", re.M)
+_TAG_LINE = re.compile(r"^[ \t]{4,}([^:\r\n]*?)[ \t]*:[ \t]?([^\r\n]*?)\r?$")
 
 
 def banner_tags(banner: str) -> dict[str, str]:
-    """Tag lines from ffmpeg's input banner (``key : value`` under a ``Metadata:`` header).
+    """Tags from the *input* section of ffmpeg's banner (``key : value`` lines under ``Metadata:``).
 
-    Matches spaces and tabs only, never newlines: builds indent differently, and a
-    whitespace class that included newlines swallowed the line after ``Metadata:``
-    on Linux and macOS.
+    Lines are split first so a pattern can never run across a newline: the first
+    version used a whitespace class that matched newlines and, on Linux and macOS
+    builds, folded the line after ``Metadata:`` into a bogus ``metadata`` key.
+    Parsing stops at the output section so ffmpeg's own output tags are not
+    reported as the file's. A line with an empty key continues the previous
+    value (ffmpeg's layout for multi-line tags).
     """
     out: dict[str, str] = {}
-    for m in _BANNER_TAG.finditer(banner):
-        key, value = m.group(1).lower(), m.group(2).strip()
-        if key in ("metadata", "duration", "stream") or not value:
+    last: str | None = None
+    for line in banner.splitlines():
+        if line.startswith(("Output #", "Stream mapping:")):
+            break
+        m = _TAG_LINE.match(line)
+        if not m:
             continue
-        out.setdefault(key, value)
+        key, value = m.group(1).strip().lower(), m.group(2).strip()
+        if not key:
+            if last is not None:
+                out[last] += "\n" + value
+            continue
+        if key == "metadata" and not value:
+            last = None  # the section header itself
+            continue
+        if key not in out:
+            out[key] = value
+            last = key
+        else:
+            last = None
     return out
 
 
