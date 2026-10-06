@@ -93,6 +93,7 @@ async def speak(
     text: str,
     output_path: str | None = None,
     quality: str = "balanced",
+    polish: bool = False,
     wait_seconds: float = 50.0,
     ctx: Context | None = None,
 ) -> dict:
@@ -101,6 +102,7 @@ async def speak(
     output_path: a file name (or path) inside ~/.voicesmith/outputs ending in .wav, .mp3, .m4a, .ogg or
         .flac. Agents may only write new files there; existing files are never replaced.
     quality: "fast", "balanced" (default) or "best".
+    polish: also try a voice-conversion pass per take, kept only when it scores higher (slower).
     """
     from voicesmith.synth import render
 
@@ -109,7 +111,7 @@ async def speak(
     outs = [_safe_output(output_path)] if output_path else None
 
     def work(log) -> dict:
-        r = render.render(voice, text, outputs=outs, quality=quality, progress=log)
+        r = render.render(voice, text, outputs=outs, quality=quality, polish=polish, progress=log)
         return {"files": [str(f) for f in r.files], "manifest": str(r.manifest), "duration_s": r.duration,
                 "engine": r.engine, "takes": r.takes, "similarity": r.score["similarity"], "wer": r.score["wer"],
                 "seconds": r.seconds}

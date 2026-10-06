@@ -96,6 +96,20 @@ def synthesize(params: dict) -> dict:
     return {"seconds": gen, "duration": len(wav) / adapter.sample_rate, "sample_rate": adapter.sample_rate}
 
 
+def convert(params: dict) -> dict:
+    import numpy as np
+    import soundfile as sf
+    from adapters import chatterbox
+
+    t0 = time.time()
+    wav, sr = chatterbox.convert(params["in_wav"], params["target_wav"], params.get("device", "cpu"))
+    wav = np.asarray(wav, dtype=np.float32).reshape(-1)
+    if not np.all(np.isfinite(wav)):
+        raise RuntimeError("voice conversion produced non-finite samples")
+    sf.write(params["out_wav"], wav, sr, subtype="FLOAT")
+    return {"seconds": time.time() - t0, "duration": len(wav) / sr, "sample_rate": sr}
+
+
 def watermark(params: dict) -> dict:
     import watermark as wm
 
@@ -108,7 +122,8 @@ def detect(params: dict) -> dict:
     return wm.detect(params["wav"])
 
 
-METHODS = {"hello": hello, "load": load, "synthesize": synthesize, "watermark": watermark, "detect": detect}
+METHODS = {"hello": hello, "load": load, "synthesize": synthesize, "convert": convert, "watermark": watermark,
+           "detect": detect}
 
 
 def main() -> None:

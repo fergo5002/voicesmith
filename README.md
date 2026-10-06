@@ -40,7 +40,11 @@ voicesmith tune sam
 voicesmith say sam "Thanks for coming in yesterday. Here's the plan." -o note.m4a
 ```
 
-Every render writes a JSON manifest next to the audio with the scores, engine, reference, seed and watermark check.
+Every render writes `<name>.voicesmith.json` next to the audio with the scores, the engine, reference and seed, every take that was tried and why any were rejected, and the post-encode watermark check.
+
+**Several people talking?** If no one clearly dominates the recordings and there is no spoken consent to anchor on, ingest stops and lists the voices it found with example timestamps, rather than guessing. Re-run with `--pick 2`, or pass `--target clip.wav` with a few seconds of only the right person.
+
+**Want the closest match you can get?** `--quality best` tries more takes, and `--polish` also runs Chatterbox's voice conversion over each take, keeping it only when it scores higher. Both cost time; see the benchmarks for what they buy.
 
 ## Use it from an agent
 
@@ -60,7 +64,7 @@ args = ["mcp"]
 
 **Cursor, Windsurf and others:** add a stdio server whose command is `voicesmith mcp`.
 
-Tools: `list_voices`, `voice_info`, `speak`, `job_status`, `verify_audio`, `consent_steps`, `doctor`. `speak` returns file paths and quality scores. Long renders come back as a job id to poll, so agents with short tool timeouts still work. Agents cannot create consent; `consent_steps` tells the human what to do.
+Tools: `list_voices`, `voice_info`, `speak`, `job_status`, `verify_audio`, `consent_steps`, `doctor`. `speak` returns file paths and quality scores. Long renders come back as a job id to poll, so agents with short tool timeouts still work. Agents write only new files inside `~/.voicesmith/outputs`, never anywhere else, and cannot create or change consent; `consent_steps` tells the human what to do. Engines an agent has not used for 15 minutes are unloaded to free memory.
 
 There is also a skill at [`skills/voicesmith/SKILL.md`](skills/voicesmith/SKILL.md) for agents that use skills. Copy it into your agent's skills folder (for Claude Code, `~/.claude/skills/voicesmith/`).
 
@@ -77,7 +81,7 @@ tune:   every installed engine × top references × probe sentences ──► be
 say:    one continuous take where the engine allows it
         ──► best-of-N with early stop: length, transcript, ending, loops, dead air, voice match, prosody
         ──► join (if split) with punctuation-sized pauses and room tone
-        ──► trim, linear loudness to -16 LUFS / -1.5 dBTP ──► AudioSeal watermark
+        ──► trim, linear loudness towards -16 LUFS, capped at -1.5 dBTP ──► AudioSeal watermark
         ──► encode with disclosure tags ──► decode and re-verify every file ──► deliver
 ```
 
@@ -101,7 +105,9 @@ Only engines whose weights allow commercial use ship by default. `voicesmith eng
 
 voicesmith detects what it is running on and installs the right PyTorch build for each engine: CUDA wheels when there is an NVIDIA GPU, the default wheels on macOS (MPS), and CPU wheels everywhere else. It deliberately avoids uv's automatic backend on Intel-graphics laptops, because that picks Intel XPU wheels for GPUs PyTorch XPU does not support.
 
-Be realistic about CPU-only machines: cloning models run several times slower than real time on a laptop CPU (see the benchmarks). Use `--quality fast` for drafts there, and expect a GPU to be an order of magnitude quicker.
+Be realistic about CPU-only machines: cloning models run between about 1.5x and 10x slower than real time on a laptop CPU (see the benchmarks). `--quality fast` uses the quickest engine whose tuned similarity is within 0.04 of the best. Expect a GPU to be much quicker; GPU speeds have not been measured for this release.
+
+Loudness is set with one linear gain, aiming for -16 LUFS but never pushing true peaks past -1.5 dBTP, so speech with sharp peaks can come out a little quieter than -16. That is deliberate: a limiter would get closer to the number by squashing the voice.
 
 ## Consent and safety
 
@@ -115,10 +121,10 @@ Read [`RESPONSIBLE_USE.md`](RESPONSIBLE_USE.md). In short: clone only people who
 | `voicesmith engines list / install / remove` | Manage engine environments |
 | `voicesmith voice create / show / delete` | Manage voices |
 | `voicesmith voices` | List voices |
-| `voicesmith consent request / verify / attest / show / revoke` | Consent records |
-| `voicesmith ingest <voice> <files, folders, URLs> [--record SECONDS]` | Add audio and rebuild references |
+| `voicesmith consent request / verify / attest / show / revoke` | Consent records (every change is kept in `consent/history.jsonl`) |
+| `voicesmith ingest <voice> <files, folders, URLs> [--record SECONDS] [--pick N] [--target clip]` | Add audio and rebuild references |
 | `voicesmith tune <voice>` | Pick the best engine and reference for a voice |
-| `voicesmith say <voice> "text" -o out.m4a [--quality fast/balanced/best]` | Render speech |
+| `voicesmith say <voice> "text" -o out.m4a [--quality fast/balanced/best] [--polish]` | Render speech |
 | `voicesmith verify <file>` | Check a file for the watermark and disclosure tags |
 | `voicesmith mcp` | Run the MCP server on stdio |
 

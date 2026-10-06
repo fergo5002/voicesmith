@@ -145,6 +145,7 @@ def render(
     seed: int | None = None,
     options: dict | None = None,
     allow_imperfect: bool = False,
+    polish: bool = False,
     progress: Progress = lambda _m: None,
 ) -> Result:
     t_start = time.time()
@@ -164,6 +165,11 @@ def render(
 
     progress(f"loading {spec.title}")
     w = client.engine_worker(eng)
+    polisher = None
+    if polish:
+        if not manager.installed("chatterbox"):
+            raise RenderError("--polish needs the chatterbox engine: voicesmith engines install chatterbox")
+        polisher = client.worker("chatterbox")
     chunks = text.chunk(script, spec.max_chars)
     progress(f"rendering {len(chunks)} part(s) with reference {ref.id}")
     attempts: list[dict] = []
@@ -186,6 +192,17 @@ def render(
                 score = evaluate.evaluate(wav, sr, chunk, voice)
                 attempts.append({"part": ci, "seed": s, "rtf": round(gen["seconds"] / max(0.1, gen["duration"]), 2),
                                  **score.as_dict()})
+                if polisher is not None and score.ok:
+                    pol_wav = Path(tmp) / f"c{ci}-t{take}-polish.wav"
+                    polisher.call("convert", {"in_wav": str(out_wav), "target_wav": str(voice.ref_path(ref)),
+                                              "out_wav": str(pol_wav), "device": client.resolve_device(polisher, "chatterbox-turbo")},
+                                  timeout=max(300.0, 60.0 * len(chunk) / 10))
+                    pwav, psr = audio.read_wav(pol_wav)
+                    pscore = evaluate.evaluate(pwav, psr, chunk, voice)
+                    attempts.append({"part": ci, "seed": s, "polished": True, **pscore.as_dict()})
+                    progress(f"part {ci + 1}/{len(chunks)} take {take + 1}: polished q={pscore.q:.2f} vs raw {score.q:.2f}")
+                    if pscore.ok and pscore.q > score.q:
+                        score, wav, sr = pscore, pwav, psr
                 verdict = f"q={score.q:.2f}" if score.ok else f"rejected: {score.reason}"
                 progress(f"part {ci + 1}/{len(chunks)} take {take + 1}: {verdict}")
                 if score.ok and (best is None or not best[0].ok or score.q > best[0].q):
@@ -227,6 +244,7 @@ def render(
             "reference": {"id": ref.id, "text": ref.text, "source": ref.source},
             "options": opts,
             "quality": quality,
+            "polish": polish,
             "seed": base_seed,
             "score": final.as_dict(),
             "attempts": attempts,

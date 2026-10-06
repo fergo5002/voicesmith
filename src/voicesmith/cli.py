@@ -368,6 +368,7 @@ def say(
     engine: Annotated[str | None, typer.Option(help="Override the tuned engine.")] = None,
     ref: Annotated[str | None, typer.Option(help="Override the tuned reference clip id.")] = None,
     seed: Annotated[int | None, typer.Option(help="Make the takes reproducible.")] = None,
+    polish: Annotated[bool, typer.Option(help="Also try a voice-conversion pass on each take and keep it only if it scores higher (slower; needs chatterbox).")] = False,
     json_out: Annotated[bool, typer.Option("--json", help="Print a JSON result.")] = False,
 ) -> None:
     """Speak text in a voice. Every take is checked, the best is mastered and watermarked."""
@@ -381,7 +382,7 @@ def say(
     outs = output or [Path.cwd() / f"{name}-{time.strftime('%Y%m%d-%H%M%S')}.wav"]
     try:
         r = render.render(name, script, outputs=[p.resolve() for p in outs], engine=engine, reference=ref,
-                          quality=quality, seed=seed, progress=_log)
+                          quality=quality, seed=seed, polish=polish, progress=_log)
     except Exception as exc:
         _fail(str(exc))
     if json_out:

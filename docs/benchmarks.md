@@ -48,3 +48,34 @@ A 12.3 minute synthetic two-speaker "podcast" built from LibriSpeech: the target
 ## End-to-end render
 
 `voicesmith say` on the ingested voice, Sopro, `--quality fast`, one 13-word sentence: 4.7 s of audio in 46 s wall time including model load, first take accepted (q 0.95, WER 0%, similarity 0.88 to the voice's held-out clips). Delivered as M4A, WAV and Ogg: AudioSeal watermark detected at probability 1.0 with the correct payload in all three after encoding; a real LibriSpeech recording used as a control read 0.0. Loudness came out at -18.8 LUFS rather than the -16 target, because the gain is linear and stops at the -1.5 dBTP ceiling instead of limiting.
+
+## Per-voice tuning
+
+`voicesmith tune` on the ingested test voice (LibriSpeech speaker 1089 from the podcast file above), 3 references per engine, 2 probe sentences each. Similarity here is against that voice's own held-out clips, so it is not on the same footing as the LibriSpeech table above.
+
+| Engine | ref01 | ref02 | ref03 | ref04 | ref05 | RTF |
+|---|---|---|---|---|---|---|
+| Qwen3-TTS 0.6B | 0.852 | **0.897** | 0.875 | | | 6.8 to 7.7 |
+| Sopro (int8) | 0.849 | 0.854 | 0.821 | | | 1.4 to 1.6 |
+| Chatterbox Turbo | 0.850 | | | 0.840 | 0.811 | 4.2 to 5.6 |
+| Chatterbox Nano | 0.835 | | | 0.845 | 0.811 | 2.4 to 2.9 |
+
+All 24 probe takes had 0% character error. Chatterbox engines were not offered ref02 and ref03 because those clips sit outside their reference window.
+
+- **The reference mattered as much as the engine.** ref05 was the weakest reference for both Chatterbox engines; Qwen's spread across its three references (0.852 to 0.897) was wider than the spread between engines on ref01 (0.835 to 0.852).
+- **A guess that failed:** after ref02 (the longest clip, 13.4 s) won for Qwen, the obvious story was "Qwen likes long references". The prediction that follows, that the shortest clip (ref03, 4.9 s) would score lowest, was false: it scored 0.875, above ref01 (12.9 s). It is the particular clip, not its length.
+- **Speed trade-off:** the winner (Qwen, 0.897) runs at about 7.7x real time on this CPU, Sopro reaches 0.854 at 1.5x. `--quality fast` uses the quickest tuned combination within 0.04 of the best; here Sopro missed that margin by 0.003, so fast mode stayed on Qwen.
+
+Two probe sentences per combination is a small sample: treat differences under about 0.02 as noise.
+
+## Voice-conversion polish (`--polish`)
+
+Chatterbox's voice-conversion model re-voices a finished take with the target reference while keeping its words and timing. Applied to the 12 LibriSpeech renders from the first table, paired per case:
+
+| Engine | Mean SIM change | Cases improved | Worst case change | WER before → after |
+|---|---|---|---|---|
+| Qwen3-TTS 0.6B | +0.026 | 9 of 12 | worst SIM 0.625 → 0.691 | 1.1% → 1.5% |
+| Chatterbox Turbo | +0.010 | 8 of 12 | 0.668 → 0.670 | 0.5% → 1.1% |
+| Sopro (int8) | +0.012 (median -0.007) | 5 of 12 | 0.602 → 0.639 | 1.4% → 0.5% |
+
+It is a modest, uneven gain that costs about 4.5 to 6.6x real time on this CPU, so it is off by default. With `--polish`, every take that passes the checks gets a polished twin and the evaluator keeps whichever scores higher, so a polish that hurts is thrown away.

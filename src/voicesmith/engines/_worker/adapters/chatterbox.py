@@ -2,9 +2,29 @@
 
 from __future__ import annotations
 
+import functools
 import os
 
 import numpy as np
+
+
+@functools.lru_cache(maxsize=1)
+def _vc(device: str):
+    from chatterbox.vc import ChatterboxVC
+
+    return ChatterboxVC.from_pretrained(device=device)
+
+
+def convert(in_wav: str, target_wav: str, device: str = "cpu") -> tuple[np.ndarray, int]:
+    """Voice conversion: keep the words and delivery of ``in_wav``, re-voice it as ``target_wav``.
+
+    Used by ``--polish``. Measured on 12 LibriSpeech renders it raised Qwen3-TTS
+    similarity on 9 of 12 cases (mean +0.026) but helped Sopro on only 5, so the
+    evaluator keeps a polished take only when it scores higher than the raw one.
+    """
+    vc = _vc(device)
+    wav = vc.generate(in_wav, target_voice_path=target_wav)
+    return wav.squeeze().detach().cpu().numpy(), int(vc.sr)
 
 
 class Adapter:
