@@ -142,3 +142,21 @@ def snr_db(audio: np.ndarray, sample_rate: int) -> float:
     if levels.size < 10:
         return 0.0
     return float(np.percentile(levels, 95) - np.percentile(levels, 10))
+
+
+def bandwidth_hz(audio: np.ndarray, sample_rate: int, below_peak_db: float = 50.0) -> float:
+    """Highest frequency whose average level is within ``below_peak_db`` of the spectral peak.
+
+    Measures where the audio actually stops: telephone audio and heavily
+    compressed rips fall off a cliff at 3 to 4 kHz, while wideband speech keeps
+    useful energy close to Nyquist. (An energy roll-off percentile does not work
+    here: 95% of speech energy sits below 2 kHz even in clean wideband audio.)
+    """
+    n = 1024
+    if audio.size < n * 2:
+        return 0.0
+    frames = np.lib.stride_tricks.sliding_window_view(audio.astype(np.float64), n)[:: n // 2]
+    power = np.mean(np.abs(np.fft.rfft(frames * np.hanning(n), axis=1)) ** 2, axis=0)
+    level = 10 * np.log10(np.convolve(power, np.ones(5) / 5, mode="same") + 1e-20)
+    above = np.flatnonzero(level >= level.max() - below_peak_db)
+    return float(above[-1] * sample_rate / n) if above.size else 0.0

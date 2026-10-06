@@ -54,3 +54,13 @@ def test_resample_round_trip_keeps_length():
     sig = tone(200, 1.0, sr=24_000)
     down = audio.resample(sig, 24_000, 16_000)
     assert len(down) == 16_000
+
+
+def test_bandwidth_tells_wideband_from_phone_audio():
+    from scipy.signal import butter, sosfilt
+
+    rng = np.random.default_rng(0)
+    wide = (0.1 * rng.standard_normal(SR * 3)).astype(np.float32)
+    phone = sosfilt(butter(8, 3400, "low", fs=SR, output="sos"), wide).astype(np.float32)
+    assert audio.bandwidth_hz(wide, SR) > 7000
+    assert audio.bandwidth_hz(phone, SR) < 6000  # the ingest gate threshold

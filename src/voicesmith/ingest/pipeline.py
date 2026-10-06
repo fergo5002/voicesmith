@@ -32,6 +32,7 @@ SR = 16_000
 
 MIN_CLIP, MAX_CLIP, IDEAL = 4.0, 14.0, (7.0, 11.0)
 MIN_GAP = 0.12  # a cut must land in a pause at least this long
+ASR_BUDGET_SECONDS = 600.0  # transcribe at most this much of the best speech
 
 
 @dataclass
@@ -101,23 +102,45 @@ def _robust_z(x: np.ndarray) -> np.ndarray:
     return np.clip((x - med) / mad, -3, 3)
 
 
-def analyse_source(path: Path, log: Log) -> tuple[list[Clip], np.ndarray]:
+def scan_source(path: Path, log: Log) -> tuple[list[Clip], np.ndarray]:
+    """Cheap pass over a whole source: speech regions with a speaker fingerprint and
+    quick signal checks. No transcription yet."""
     wav = audio.load(path, SR)
-    log(f"{path.name}: {len(wav) / SR / 60:.1f} min of audio")
-    regions = vad.speech_regions(wav, max_speech=28.0)
+    regions = vad.speech_regions(wav, max_speech=20.0)
     speech_s = sum(r.duration for r in regions)
-    log(f"{path.name}: {speech_s / 60:.1f} min of speech in {len(regions)} regions")
-    chunks = [wav[int(r.start * SR) : int(r.end * SR)] for r in regions]
-    transcripts: list[asr.Transcript] = []
-    for k in range(0, len(chunks), 16):
-        transcripts += asr.transcribe_many(chunks[k : k + 16])
+    log(f"{path.name}: {len(wav) / SR / 60:.1f} min of audio, {speech_s / 60:.1f} min of speech in {len(regions)} regions")
+    out: list[Clip] = []
+    for r in regions:
+        if r.duration < 1.5:
+            continue
+        seg = wav[int(r.start * SR) : int(r.end * SR)]
+        c = Clip(source=path.name, start=r.start, end=r.end, text="", confidence=1.0, emb=speaker.embed(seg))
+        c.metrics = {
+            "clipping": audio.clipping_ratio(seg, 0.99),
+            "snr_db": audio.snr_db(seg, SR),
+            "bandwidth_hz": audio.bandwidth_hz(seg, SR),
+        }
+        out.append(c)
+    return out, wav
+
+
+def transcribe_regions(regions: list[Clip], waves: dict[str, np.ndarray], budget_s: float, log: Log) -> list[Clip]:
+    """Transcribe the best regions first, stopping at ``budget_s`` of audio, and cut clips from them.
+
+    Transcription is the only expensive step in ingest, so it runs on a bounded
+    shortlist rather than on every minute of a long podcast.
+    """
     clips: list[Clip] = []
-    for r, tr in zip(regions, transcripts):
-        for w in tr.words:
-            w.start += r.start
-            w.end += r.start
-        clips += candidate_clips(tr.words, path.name)
-    return clips, wav
+    used = 0.0
+    for r in regions:
+        if used >= budget_s:
+            break
+        seg = waves[r.source][int(r.start * SR) : int(r.end * SR)]
+        tr = asr.transcribe(seg, offset=r.start)
+        used += r.duration
+        clips += candidate_clips(tr.words, r.source)
+    log(f"transcribed {used / 60:.1f} min of the best speech into {len(clips)} candidate clips")
+    return clips
 
 
 def measure(clip: Clip, wav: np.ndarray) -> None:
@@ -127,7 +150,7 @@ def measure(clip: Clip, wav: np.ndarray) -> None:
     clip.metrics = {
         "clipping": audio.clipping_ratio(seg, 0.99),
         "snr_db": audio.snr_db(seg, SR),
-        "rolloff_hz": audio.spectral_rolloff_hz(seg, SR),
+        "bandwidth_hz": audio.bandwidth_hz(seg, SR),
         "f0_median": p.f0_median,
         "f0_range_st": p.f0_range_st,
         "rate_wps": p.rate_wps,
@@ -197,14 +220,20 @@ def find_target(
     return speaker.centroid(embs[members])
 
 
-def gate(c: Clip) -> str:
-    m = c.metrics
+def _signal_gate(m: dict) -> str:
     if m["clipping"] > 0.001:
         return "clipped"
-    if m["rolloff_hz"] < 3800:
+    if m["bandwidth_hz"] < 6000:  # measured: clean 16 kHz speech 6.5k+, phone 4.3k, 16 kbps MP3 5.5k
         return "low bandwidth (phone or heavy compression)"
     if m["snr_db"] < 18:
         return "noisy"
+    return ""
+
+
+def gate(c: Clip) -> str:
+    m = c.metrics
+    if why := _signal_gate(m):
+        return why
     if c.confidence < 0.55:
         return "unclear speech"
     if m["f0_median"] <= 0:
@@ -246,38 +275,51 @@ def select(clips: list[Clip], k: int, log: Log) -> list[Clip]:
 def run(
     voice: voices.Voice, *, k: int = 8, log: Log = print, target_clip: str | None = None, pick: int | None = None
 ) -> voices.Voice:
-    files = [voice.dir / "sources" / s["path"] for s in voice.sources]
+    files = [voice.dir / "sources" / src["path"] for src in voice.sources]
     if not files:
         raise ValueError(f"voice {voice.name!r} has no sources; add some with: voicesmith ingest {voice.name} <file|url>")
     t0 = time.time()
-    all_clips: list[Clip] = []
+    regions: list[Clip] = []
     waves: dict[str, np.ndarray] = {}
     for f in files:
-        clips, wav = analyse_source(f, log)
+        rs, wav = scan_source(f, log)
         waves[f.name] = wav
-        all_clips += clips
-    log(f"{len(all_clips)} candidate clips; measuring")
-    for c in all_clips:
-        measure(c, waves[c.source])
+        regions += rs
+    if not regions:
+        raise RuntimeError("no speech found in the sources")
     target_emb = speaker.embed(audio.load(target_clip, SR)) if target_clip else None
-    target = find_target(all_clips, consent.anchor(voice), log, target_emb, pick)
-    sims = np.array([float(c.emb @ target) for c in all_clips])
-    for c, s in zip(all_clips, sims):
-        c.sim = s
+    target = find_target(regions, consent.anchor(voice), log, target_emb, pick)
+    for r in regions:
+        r.sim = float(r.emb @ target)
+    sims = np.array([r.sim for r in regions])
     keep_sim = max(0.5, float(np.median(sims[sims >= 0.5])) - 0.25) if (sims >= 0.5).any() else 0.5
-    target_clips = [c for c in all_clips if c.sim >= keep_sim]
-    other = len(all_clips) - len(target_clips)
-    if other:
-        log(f"set aside {other} clips that sound like someone else (similarity < {keep_sim:.2f})")
-    if not target_clips:
-        raise RuntimeError("no clips matched the target speaker")
-    centroid = speaker.centroid([c.emb for c in target_clips])
-    for c in target_clips:
+    target_regions = [r for r in regions if r.sim >= keep_sim]
+    if len(target_regions) < len(regions):
+        others = sum(r.duration for r in regions if r.sim < keep_sim) / 60
+        log(f"set aside {others:.1f} min that sounds like someone else (similarity < {keep_sim:.2f})")
+    if not target_regions:
+        raise RuntimeError("no speech matched the target speaker")
+    centroid = speaker.centroid([r.emb for r in target_regions])
+    # Quick signal gates, then the cleanest, most typical regions go to transcription first.
+    usable = [r for r in target_regions if not _signal_gate(r.metrics)]
+    if not usable:
+        raise RuntimeError("all of the target speaker's audio failed the signal checks (clipped, noisy or low bandwidth)")
+    for r in usable:
+        r.sim = float(r.emb @ centroid)
+    order = 0.6 * _robust_z(np.array([r.sim for r in usable])) + 0.4 * _robust_z(
+        np.array([r.metrics["snr_db"] for r in usable])
+    )
+    ranked = [usable[i] for i in np.argsort(-order)]
+    candidates = transcribe_regions(ranked, waves, ASR_BUDGET_SECONDS, log)
+    if not candidates:
+        raise RuntimeError("no clean 4 to 14 second stretches with pauses at both ends were found")
+    for c in candidates:
+        measure(c, waves[c.source])
         c.sim = float(c.emb @ centroid)
         c.rejected = gate(c)
-    good = [c for c in target_clips if not c.rejected]
+    good = [c for c in candidates if not c.rejected]
     reasons: dict[str, int] = {}
-    for c in target_clips:
+    for c in candidates:
         if c.rejected:
             reasons[c.rejected] = reasons.get(c.rejected, 0) + 1
     for why, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
@@ -289,20 +331,22 @@ def run(
     screened = []
     for c in shortlist:
         seg = waves[c.source][int(c.start * SR) : int(c.end * SR)]
-        bad = {k_: v for k_, v in events.contaminants(seg).items() if v >= 0.2}
+        bad = {name: prob for name, prob in events.contaminants(seg).items() if prob >= 0.2}
         if bad:
             c.rejected = "contains " + ", ".join(sorted(bad))
+            log(f"rejected a clip at {_fmt_time(c.start)}: {c.rejected}")
         else:
             screened.append(c)
     chosen = select(screened, k, log)
     log(f"selected {len(chosen)} references from {len(good)} clean clips")
-    _write(voice, chosen, [c for c in good if c not in chosen], target_clips, log)
+    _write(voice, chosen, [c for c in good if c not in chosen], target_regions, log)
     voice.stats.update(
         {
             "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "seconds_to_ingest": round(time.time() - t0, 1),
-            "candidate_clips": len(all_clips),
-            "target_clips": len(target_clips),
+            "speech_minutes": round(sum(r.duration for r in regions) / 60, 2),
+            "target_minutes": round(sum(r.duration for r in target_regions) / 60, 2),
+            "candidate_clips": len(candidates),
             "clean_clips": len(good),
             "clean_minutes": round(sum(c.duration for c in good) / 60, 2),
             "self_similarity": round(speaker.self_similarity(np.stack([c.emb for c in good])), 4),
