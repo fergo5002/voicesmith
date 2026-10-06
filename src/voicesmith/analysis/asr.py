@@ -66,12 +66,14 @@ def _words(res, offset: float) -> list[Word]:
         piece = tok.strip()
         if not piece:
             continue
-        if starts_word and not (piece and all(c in _PUNCT for c in piece)):
+        is_punct = all(c in _PUNCT for c in piece)
+        if starts_word and not is_punct:
             if cur:
                 words.append(_finish(cur))
             cur = {"text": piece, "start": t0 + offset, "end": t0 + d + offset, "lps": [lp]}
+        elif cur is None:
+            continue  # punctuation before any word: nothing to attach it to
         else:
-            assert cur is not None
             cur["text"] += piece
             cur["end"] = t0 + d + offset
             cur["lps"].append(lp)

@@ -33,11 +33,11 @@ def setup(monkeypatch, tmp_path):
     v.save()
     consent.attest(v, by="Op", evidence="test")
     worker = FakeWorker()
-    monkeypatch.setattr(render, "choose_engine", lambda voice, requested=None: "sopro")
+    monkeypatch.setattr(render, "choose_engine", lambda voice, requested=None, quality="balanced": "sopro")
     monkeypatch.setattr(render.client, "engine_worker", lambda eng, *a, **k: worker)
     delivered = []
 
-    def fake_master(wav, sr, outputs, tags):
+    def fake_master(wav, sr, outputs, tags, before_deliver=None):
         delivered.append(outputs)
         return master.MasterResult(files=[])
 
@@ -86,3 +86,19 @@ def test_render_refuses_without_consent(setup):
     with pytest.raises(PermissionError):
         render.render("fay", "Hello world.", outputs=[tmp / "o.wav"])
     assert worker.calls == 0
+
+
+def test_fast_quality_takes_the_quickest_combination_close_to_the_best(monkeypatch):
+    v = voices.create("gus", "Gus Example")
+    v.tuning = voices.Tuning(
+        engine="qwen3-tts-0.6b", reference="ref02", options={}, score=0.9, similarity=0.897, cer=0.0, rtf=7.7,
+        tuned_at="x",
+        tried=[
+            {"engine": "qwen3-tts-0.6b", "reference": "ref02", "similarity": 0.897, "pass_rate": 1.0, "rtf": 7.7},
+            {"engine": "sopro", "reference": "ref02", "similarity": 0.861, "pass_rate": 1.0, "rtf": 1.5},
+            {"engine": "chatterbox-nano", "reference": "ref04", "similarity": 0.845, "pass_rate": 1.0, "rtf": 0.9},
+        ],
+    )
+    monkeypatch.setattr(render.manager, "installed", lambda fam: True)
+    assert render.choose_engine(v, quality="fast") == "sopro"  # nano is faster but more than 0.04 behind
+    assert render.choose_engine(v, quality="balanced") == "qwen3-tts-0.6b"

@@ -33,6 +33,7 @@ SR = 16_000
 MIN_CLIP, MAX_CLIP, IDEAL = 4.0, 14.0, (7.0, 11.0)
 MIN_GAP = 0.12  # a cut must land in a pause at least this long
 ASR_BUDGET_SECONDS = 600.0  # transcribe at most this much of the best speech
+IN_MEMORY_HOURS = 2.0  # decoded sources kept in RAM (about 230 MB per hour); beyond this, decode on demand
 
 
 @dataclass
@@ -102,6 +103,30 @@ def _robust_z(x: np.ndarray) -> np.ndarray:
     return np.clip((x - med) / mad, -3, 3)
 
 
+class Sources:
+    """Decoded audio by source name.
+
+    16 kHz float audio is about 230 MB per hour, so sources stay in memory only
+    up to ``IN_MEMORY_HOURS`` in total; beyond that, segments are decoded from
+    disk on demand with a seek, which is slower but keeps memory flat.
+    """
+
+    def __init__(self, files: dict[str, Path]):
+        self.files = files
+        self.cache: dict[str, np.ndarray] = {}
+        self.cached_seconds = 0.0
+
+    def keep(self, name: str, wav: np.ndarray) -> None:
+        if self.cached_seconds + len(wav) / SR <= IN_MEMORY_HOURS * 3600:
+            self.cache[name] = wav
+            self.cached_seconds += len(wav) / SR
+
+    def segment(self, name: str, start: float, end: float) -> np.ndarray:
+        if name in self.cache:
+            return self.cache[name][int(start * SR) : int(end * SR)]
+        return ffmpeg.decode(self.files[name], SR, start=start, duration=end - start)
+
+
 def scan_source(path: Path, log: Log) -> tuple[list[Clip], np.ndarray]:
     """Cheap pass over a whole source: speech regions with a speaker fingerprint and
     quick signal checks. No transcription yet."""
@@ -124,7 +149,7 @@ def scan_source(path: Path, log: Log) -> tuple[list[Clip], np.ndarray]:
     return out, wav
 
 
-def transcribe_regions(regions: list[Clip], waves: dict[str, np.ndarray], budget_s: float, log: Log) -> list[Clip]:
+def transcribe_regions(regions: list[Clip], waves: Sources, budget_s: float, log: Log) -> list[Clip]:
     """Transcribe the best regions first, stopping at ``budget_s`` of audio, and cut clips from them.
 
     Transcription is the only expensive step in ingest, so it runs on a bounded
@@ -135,7 +160,7 @@ def transcribe_regions(regions: list[Clip], waves: dict[str, np.ndarray], budget
     for r in regions:
         if used >= budget_s:
             break
-        seg = waves[r.source][int(r.start * SR) : int(r.end * SR)]
+        seg = waves.segment(r.source, r.start, r.end)
         tr = asr.transcribe(seg, offset=r.start)
         used += r.duration
         clips += candidate_clips(tr.words, r.source)
@@ -143,8 +168,8 @@ def transcribe_regions(regions: list[Clip], waves: dict[str, np.ndarray], budget
     return clips
 
 
-def measure(clip: Clip, wav: np.ndarray) -> None:
-    seg = wav[int(clip.start * SR) : int(clip.end * SR)]
+def measure(clip: Clip, seg: np.ndarray) -> None:
+    """``seg`` is the clip's own audio at 16 kHz."""
     clip.emb = speaker.embed(seg)
     p = prosody.measure(seg, words=len(clip.text.split()), speech_seconds=clip.duration)
     clip.metrics = {
@@ -174,6 +199,11 @@ def _clusters(clips: list[Clip]) -> list[tuple[float, list[int]]]:
     """Greedy speaker clusters by duration share: densest medoid first, then the rest."""
     embs = np.stack([c.emb for c in clips])
     durs = np.array([c.duration for c in clips])
+    if len(clips) < 3:
+        gram = embs @ embs.T
+        if np.all(gram >= SAME_SPEAKER):
+            return [(1.0, list(range(len(clips))))]
+        return [(float(d / durs.sum()), [i]) for i, d in enumerate(durs)]
     left = np.ones(len(clips), dtype=bool)
     out = []
     while left.sum() >= 3 and len(out) < 4:
@@ -280,10 +310,11 @@ def run(
         raise ValueError(f"voice {voice.name!r} has no sources; add some with: voicesmith ingest {voice.name} <file|url>")
     t0 = time.time()
     regions: list[Clip] = []
-    waves: dict[str, np.ndarray] = {}
+    waves = Sources({f.name: f for f in files})
     for f in files:
         rs, wav = scan_source(f, log)
-        waves[f.name] = wav
+        waves.keep(f.name, wav)
+        del wav
         regions += rs
     if not regions:
         raise RuntimeError("no speech found in the sources")
@@ -314,7 +345,7 @@ def run(
     if not candidates:
         raise RuntimeError("no clean 4 to 14 second stretches with pauses at both ends were found")
     for c in candidates:
-        measure(c, waves[c.source])
+        measure(c, waves.segment(c.source, c.start, c.end))
         c.sim = float(c.emb @ centroid)
         c.rejected = gate(c)
     good = [c for c in candidates if not c.rejected]
@@ -330,7 +361,7 @@ def run(
     # Sound-event screening is the slowest per-clip check, so it runs on the shortlist only.
     screened = []
     for c in shortlist:
-        seg = waves[c.source][int(c.start * SR) : int(c.end * SR)]
+        seg = waves.segment(c.source, c.start, c.end)
         bad = {name: prob for name, prob in events.contaminants(seg).items() if prob >= 0.2}
         if bad:
             c.rejected = "contains " + ", ".join(sorted(bad))

@@ -93,6 +93,9 @@ def save(voice: voices.Voice, c: Consent) -> Consent:
     tmp = p.with_suffix(".part")
     tmp.write_text(json.dumps(asdict(c), indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(p)
+    # Append-only history: a later record can never erase that consent was once withdrawn.
+    with open(p.parent / "history.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"at": _now(), **asdict(c)}, ensure_ascii=False) + "\n")
     return c
 
 
@@ -177,9 +180,15 @@ def anchor(voice: voices.Voice) -> np.ndarray | None:
     return np.load(p) if p.exists() else None
 
 
-def attest(voice: voices.Voice, *, by: str, evidence: str, scope: str = "") -> Consent:
+def attest(voice: voices.Voice, *, by: str, evidence: str, scope: str = "", override_revocation: bool = False) -> Consent:
     if not by.strip() or not evidence.strip():
         raise ValueError("an attestation needs who is attesting (--by) and what the authorisation is (--evidence)")
+    current = load(voice)
+    if current is not None and current.status == "revoked" and not override_revocation:
+        raise ValueError(
+            f"{voice.speaker} revoked consent on {current.revoked_at}. Only attest again if they have given new "
+            "permission since, and say so with --override-revocation and evidence of the new permission."
+        )
     c = Consent(
         kind="attested",
         status="attested",

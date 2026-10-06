@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import itertools
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -13,6 +14,9 @@ from pathlib import Path
 
 from voicesmith import paths
 from voicesmith.engines import manager, registry
+
+# Keep worker consoles from flashing up when the MCP server runs without one on Windows.
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 class WorkerError(RuntimeError):
@@ -39,6 +43,7 @@ class Worker:
             errors="replace",
             env=manager.worker_env(),
             bufsize=1,
+            creationflags=NO_WINDOW,
         )
         self._ids = itertools.count(1)
         self._replies: queue.Queue = queue.Queue()
@@ -47,8 +52,13 @@ class Worker:
         self.info: dict = {}
         threading.Thread(target=self._read_stdout, daemon=True).start()
         threading.Thread(target=self._read_stderr, daemon=True).start()
-        ready = self._next(start_timeout)
+        try:
+            ready = self._next(start_timeout)
+        except WorkerError:
+            self.kill()
+            raise
         if ready.get("event") != "ready":
+            self.kill()
             raise WorkerError(f"worker did not start cleanly: {ready}")
         self.last_used = time.time()
 
@@ -80,8 +90,11 @@ class Worker:
             raise WorkerError(f"{self.family} worker exited with code {msg.get('code')}; log: {self.log_path}")
         return msg
 
-    def call(self, method: str, params: dict | None = None, timeout: float = 600.0) -> dict:
-        with self._lock:
+    def call(self, method: str, params: dict | None = None, timeout: float = 600.0,
+             lock_timeout: float | None = None) -> dict:
+        if not self._lock.acquire(timeout=-1 if lock_timeout is None else lock_timeout):
+            raise WorkerError(f"the {self.family} engine is busy with another render; try again shortly")
+        try:
             if self.proc.poll() is not None:
                 raise WorkerError(f"{self.family} worker is not running; log: {self.log_path}")
             rid = next(self._ids)
@@ -97,6 +110,8 @@ class Worker:
             if "error" in msg:
                 raise WorkerError(f"{self.family}.{method}: {msg['error']}", msg.get("trace"))
             return msg["result"]
+        finally:
+            self._lock.release()
 
     def alive(self) -> bool:
         return self.proc.poll() is None
@@ -130,7 +145,11 @@ def worker(family: str) -> Worker:
         w = _POOL.get(family)
         if w is None or not w.alive():
             w = Worker(family)
-            w.info = w.call("hello", timeout=180)
+            try:
+                w.info = w.call("hello", timeout=180)
+            except Exception:
+                w.kill()  # never leave a half-started engine process behind
+                raise
             _POOL[family] = w
         return w
 

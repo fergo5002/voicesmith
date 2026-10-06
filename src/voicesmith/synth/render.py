@@ -58,12 +58,34 @@ class Result:
     attempts: list[dict] = field(default_factory=list)
 
 
-def choose_engine(voice: voices.Voice, requested: str | None = None) -> str:
+FAST_SIMILARITY_SLACK = 0.04
+
+
+def fast_pick(voice: voices.Voice) -> dict | None:
+    """For --quality fast: the quickest tuned combination within a hair of the best.
+
+    On one CPU voice the tuned winner ran at 7.7x real time while another engine
+    was 0.04 behind on similarity at 1.5x; fast mode takes that trade.
+    """
+    if not voice.tuning or not voice.tuning.tried:
+        return None
+    rows = [t for t in voice.tuning.tried
+            if t.get("pass_rate", 0) >= 0.5 and manager.installed(registry.get(t["engine"]).family)]
+    if not rows:
+        return None
+    best = max(t["similarity"] for t in rows)
+    close = [t for t in rows if t["similarity"] >= best - FAST_SIMILARITY_SLACK]
+    return min(close, key=lambda t: t.get("rtf", 99.0))
+
+
+def choose_engine(voice: voices.Voice, requested: str | None = None, quality: str = "balanced") -> str:
     if requested:
         spec = registry.get(requested)
         if not manager.installed(spec.family):
             raise RenderError(f"engine {requested!r} is not installed; run: voicesmith engines install {spec.family}")
         return requested
+    if quality == "fast" and (pick := fast_pick(voice)):
+        return pick["engine"]
     if voice.tuning and manager.installed(registry.get(voice.tuning.engine).family):
         return voice.tuning.engine
     device = hardware.detect().preferred_device
@@ -81,6 +103,10 @@ def choose_reference(voice: voices.Voice, engine: str, requested: str | None = N
         return voice.reference(requested)
     if voice.tuning and voice.tuning.engine == engine:
         return voice.reference(voice.tuning.reference)
+    if voice.tuning:
+        tried = [t for t in voice.tuning.tried if t["engine"] == engine]
+        if tried:
+            return voice.reference(max(tried, key=lambda t: t["similarity"])["reference"])
     lo, hi = registry.get(engine).ref_window
     fits = [r for r in voice.references if lo - 1.5 <= r.duration <= hi + 3.0]
     return max(fits or voice.references, key=lambda r: r.score)
@@ -89,6 +115,23 @@ def choose_reference(voice: voices.Voice, engine: str, requested: str | None = N
 def default_output(voice: voices.Voice, fmt: str) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     return paths.sub("outputs") / f"{voice.name}-{stamp}.{fmt}"
+
+
+def manifest_path(first_output: Path) -> Path:
+    """``<stem>.voicesmith.json`` beside the audio. The distinct suffix means a
+    manifest can never replace an unrelated ``.json`` that shares the stem."""
+    return first_output.with_name(first_output.stem + ".voicesmith.json")
+
+
+def check_outputs(outputs: list[Path]) -> list[Path]:
+    protected = [paths.voices_dir().resolve(), paths.envs_dir().resolve(), paths.models_dir().resolve()]
+    out = []
+    for o in outputs:
+        r = Path(o).expanduser().resolve()
+        if any(r.is_relative_to(p) for p in protected):
+            raise RenderError(f"refusing to write into the voicesmith voices folder or its environments: {r}")
+        out.append(r)
+    return out
 
 
 def render(
@@ -111,12 +154,12 @@ def render(
     voice = voices.load(voice_name)
     grant = consent.require(voice)
     q = QUALITY[quality]
-    eng = choose_engine(voice, engine)
+    eng = choose_engine(voice, engine, quality)
     spec = registry.get(eng)
     ref = choose_reference(voice, eng, reference)
     opts = {"language": voice.language, **(voice.tuning.options if voice.tuning and voice.tuning.engine == eng else {}),
             **(options or {})}
-    outputs = outputs or [default_output(voice, "wav")]
+    outputs = check_outputs(outputs or [default_output(voice, "wav")])
     base_seed = seed if seed is not None else secrets.randbelow(2**31)
 
     progress(f"loading {spec.title}")
@@ -162,10 +205,19 @@ def render(
     final = _combine(chunk_scores, [len(c) for c in best_chunks])
     progress("mastering, watermarking and verifying")
     tags = provenance.tags(voice=voice.name, speaker=voice.speaker, consent_kind=grant.kind, engine=eng)
-    mastered = master.master(wav, sr, outputs, tags)
-    manifest_path = outputs[0].with_suffix(".json")
+
+
+    def still_consented() -> None:
+        # Consent can be revoked or replaced while takes render; check again right before delivery.
+        now = consent.require(voices.load(voice_name))
+        if now.created != grant.created or now.kind != grant.kind:
+            raise PermissionError(f"consent for {voice_name!r} changed during the render; nothing was delivered")
+
+    still_consented()
+    mastered = master.master(wav, sr, outputs, tags, before_deliver=still_consented)
+    manifest = manifest_path(outputs[0])
     provenance.write_manifest(
-        manifest_path,
+        manifest,
         {
             "voice": voice.name,
             "speaker": voice.speaker,
@@ -188,7 +240,7 @@ def render(
     )
     return Result(
         files=[d.path for d in mastered.files],
-        manifest=manifest_path,
+        manifest=manifest,
         engine=eng,
         reference=ref.id,
         seconds=round(time.time() - t_start, 1),

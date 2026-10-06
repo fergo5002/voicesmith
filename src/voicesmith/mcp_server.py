@@ -13,11 +13,16 @@ Design rules:
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from pathlib import Path
 
 from fastmcp import Context, FastMCP
 
-from voicesmith import __version__, consent, jobs, voices
+from voicesmith import __version__, consent, jobs, paths, voices
+
+OUTPUT_FORMATS = {".wav", ".mp3", ".m4a", ".ogg", ".flac"}
+IDLE_UNLOAD_SECONDS = 900
 
 INSTRUCTIONS = """voicesmith renders speech in cloned voices that have recorded consent.
 Call list_voices first. Use speak to render; if it returns status "running", call job_status with the job_id
@@ -29,12 +34,17 @@ server = FastMCP("voicesmith", instructions=INSTRUCTIONS, version=__version__)
 
 def _voice_row(v: voices.Voice) -> dict:
     c = consent.load(v)
+    try:
+        consent.require(v)
+        allowed = True
+    except PermissionError:
+        allowed = False
     return {
         "name": v.name,
         "speaker": v.speaker,
         "language": v.language,
         "consent": c.status if c else "none",
-        "ready": bool(c and c.usable and v.references),
+        "ready": bool(allowed and v.references),
         "references": len(v.references),
         "tuned_engine": v.tuning.engine if v.tuning else None,
     }
@@ -88,14 +98,15 @@ async def speak(
 ) -> dict:
     """Render ``text`` in ``voice``. Returns file paths and quality scores, or a job id if still running.
 
-    output_path: where to write (.wav, .mp3, .m4a, .ogg or .flac). Defaults to ~/.voicesmith/outputs.
+    output_path: a file name (or path) inside ~/.voicesmith/outputs ending in .wav, .mp3, .m4a, .ogg or
+        .flac. Agents may only write new files there; existing files are never replaced.
     quality: "fast", "balanced" (default) or "best".
     """
     from voicesmith.synth import render
 
     v = voices.load(voice)
     consent.require(v)  # fail fast with the human-readable reason
-    outs = [Path(output_path).expanduser().resolve()] if output_path else None
+    outs = [_safe_output(output_path)] if output_path else None
 
     def work(log) -> dict:
         r = render.render(voice, text, outputs=outs, quality=quality, progress=log)
@@ -115,6 +126,20 @@ async def speak(
             except Exception:
                 pass
     return job.view()
+
+
+def _safe_output(output_path: str) -> Path:
+    """Agents write only new audio files inside the outputs folder."""
+    root = paths.sub("outputs").resolve()
+    p = Path(output_path).expanduser()
+    p = (p if p.is_absolute() else root / p).resolve()
+    if not p.is_relative_to(root):
+        raise ValueError(f"output_path must be inside {root} (the voicesmith outputs folder)")
+    if p.suffix.lower() not in OUTPUT_FORMATS:
+        raise ValueError(f"output_path must end in one of {', '.join(sorted(OUTPUT_FORMATS))}")
+    if p.exists() or p.with_name(p.stem + ".voicesmith.json").exists():
+        raise ValueError(f"{p.name} already exists; choose a new file name")
+    return p
 
 
 @server.tool
@@ -141,7 +166,8 @@ def verify_audio(path: str) -> dict:
     if w is not None:
         with tempfile.TemporaryDirectory() as tmp:
             wav = audio.save_wav(Path(tmp) / "x.wav", ffmpeg.decode(p, 24_000), 24_000, subtype="FLOAT")
-            det = w.call("detect", {"wav": str(wav)})
+            # A render may be using this worker; do not block an agent's tool call for minutes.
+            det = w.call("detect", {"wav": str(wav)}, lock_timeout=40)
     return {
         "disclosure_tags": provenance.check_tags(meta),
         "watermark": det,
@@ -158,5 +184,18 @@ def doctor() -> list[dict]:
     return [c.__dict__ for c in checks]
 
 
+def _reaper() -> None:
+    from voicesmith.engines import client
+
+    while True:
+        time.sleep(60)
+        try:
+            client.reap_idle(IDLE_UNLOAD_SECONDS)
+        except Exception:
+            pass
+
+
 def serve() -> None:
+    # Engines hold gigabytes of RAM or VRAM; unload ones an agent has not used for a while.
+    threading.Thread(target=_reaper, daemon=True, name="voicesmith-reaper").start()
     server.run(show_banner=False)

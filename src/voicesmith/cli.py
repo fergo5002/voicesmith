@@ -253,6 +253,7 @@ def consent_attest(
     evidence: Annotated[str, typer.Option(help="How and when the speaker authorised this.")],
     scope: Annotated[str, typer.Option(help="What the voice may be used for.")] = "",
     yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
+    override_revocation: Annotated[bool, typer.Option(help="The speaker revoked consent before and has since given new permission.")] = False,
 ) -> None:
     """Record that the speaker authorised cloning when they cannot record a statement."""
     from voicesmith import consent, voices
@@ -262,7 +263,10 @@ def consent_attest(
            f"({evidence}). Outputs will be labelled as made under an attestation.")
     if not yes and not typer.confirm(msg + " Continue?"):
         raise typer.Exit()
-    consent.attest(v, by=by, evidence=evidence, scope=scope)
+    try:
+        consent.attest(v, by=by, evidence=evidence, scope=scope, override_revocation=override_revocation)
+    except ValueError as exc:
+        _fail(str(exc))
     out.print("[green]attestation recorded.[/]")
 
 

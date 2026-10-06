@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 class FFmpegError(RuntimeError):
@@ -36,7 +39,7 @@ def exe() -> str:
 
 def run(args: list[str], *, input_bytes: bytes | None = None, timeout: float = 600) -> subprocess.CompletedProcess:
     cmd = [exe(), "-hide_banner", "-nostdin", *args]
-    proc = subprocess.run(cmd, input=input_bytes, capture_output=True, timeout=timeout)
+    proc = subprocess.run(cmd, input=input_bytes, capture_output=True, timeout=timeout, creationflags=NO_WINDOW)
     if proc.returncode != 0:
         tail = proc.stderr.decode("utf-8", "replace")[-1500:]
         raise FFmpegError(f"ffmpeg failed ({proc.returncode}): {' '.join(args[:6])}...\n{tail}")
@@ -57,7 +60,8 @@ _AUD = re.compile(r"Audio: ([\w\-]+)[^\n]*?, (\d+) Hz, ([^,\n]+)")
 
 def probe(path: str | Path) -> Probe:
     """Read basic stream facts from ffmpeg's banner (imageio-ffmpeg ships no ffprobe)."""
-    proc = subprocess.run([exe(), "-hide_banner", "-nostdin", "-i", str(path)], capture_output=True, timeout=60)
+    proc = subprocess.run([exe(), "-hide_banner", "-nostdin", "-i", str(path)], capture_output=True, timeout=60,
+                          creationflags=NO_WINDOW)
     text = proc.stderr.decode("utf-8", "replace")
     if "Audio:" not in text:
         raise FFmpegError(f"no audio stream found in {path}")
