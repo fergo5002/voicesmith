@@ -135,21 +135,66 @@ def measure(clip: Clip, wav: np.ndarray) -> None:
     }
 
 
-def find_target(clips: list[Clip], anchor: np.ndarray | None, log: Log) -> np.ndarray:
+class AmbiguousSpeaker(RuntimeError):
+    """No consent anchor or target clip, and no single voice clearly dominates."""
+
+
+SAME_SPEAKER = 0.5  # TitaNet cosine
+DOMINANT_SHARE = 0.6
+
+
+def _fmt_time(s: float) -> str:
+    return f"{int(s // 60)}:{int(s % 60):02d}"
+
+
+def _clusters(clips: list[Clip]) -> list[tuple[float, list[int]]]:
+    """Greedy speaker clusters by duration share: densest medoid first, then the rest."""
     embs = np.stack([c.emb for c in clips])
-    if anchor is not None:
-        log("matching speakers against the consent recording")
-        sims = embs @ anchor
-        seed = embs[sims >= np.quantile(sims, 0.5)] if (sims >= 0.45).sum() < 3 else embs[sims >= 0.45]
-        return speaker.centroid(seed)
-    # No anchor: the dominant voice is the medoid of the densest neighbourhood.
-    gram = embs @ embs.T
-    density = (gram >= 0.5).sum(axis=1)
-    medoid = embs[int(np.argmax(density))]
-    neighbours = embs[(embs @ medoid) >= 0.5]
-    share = len(neighbours) / len(embs)
-    log(f"dominant speaker covers {share:.0%} of candidate clips")
-    return speaker.centroid(neighbours)
+    durs = np.array([c.duration for c in clips])
+    left = np.ones(len(clips), dtype=bool)
+    out = []
+    while left.sum() >= 3 and len(out) < 4:
+        idx = np.flatnonzero(left)
+        sub = embs[idx]
+        density = ((sub @ sub.T) >= SAME_SPEAKER).astype(float) @ durs[idx]
+        medoid = sub[int(np.argmax(density))]
+        members = idx[(sub @ medoid) >= SAME_SPEAKER]
+        out.append((float(durs[members].sum() / durs.sum()), members.tolist()))
+        left[members] = False
+    return out
+
+
+def find_target(
+    clips: list[Clip], anchor: np.ndarray | None, log: Log, target: np.ndarray | None = None, pick: int | None = None
+) -> np.ndarray:
+    embs = np.stack([c.emb for c in clips])
+    for name, ref in (("the consent recording", anchor), ("the --target clip", target)):
+        if ref is not None:
+            log(f"matching speakers against {name}")
+            sims = embs @ ref
+            seed = embs[sims >= 0.45] if (sims >= 0.45).sum() >= 3 else embs[sims >= np.quantile(sims, 0.8)]
+            return speaker.centroid(seed)
+    clusters = _clusters(clips)
+    if pick is not None:
+        if not 1 <= pick <= len(clusters):
+            raise ValueError(f"--pick {pick} is out of range: found {len(clusters)} voice(s)")
+        share, members = clusters[pick - 1]
+        log(f"using voice {pick} as chosen ({share:.0%} of the speech)")
+        return speaker.centroid(embs[members])
+    share, members = clusters[0]
+    second = clusters[1][0] if len(clusters) > 1 else 0.0
+    if share < DOMINANT_SHARE or (second > 0.2 and share < 2 * second):
+        lines = []
+        for i, (sh, mem) in enumerate(clusters, 1):
+            ex = ", ".join(f"{clips[m].source} at {_fmt_time(clips[m].start)}" for m in mem[:3])
+            lines.append(f"  voice {i}: {sh:.0%} of the speech, e.g. {ex}")
+        raise AmbiguousSpeaker(
+            "more than one person speaks a lot in these recordings and there is no consent recording to say "
+            "which one to clone:\n" + "\n".join(lines) + "\nRe-run with --pick N to choose one, verify spoken "
+            "consent first (it anchors the speaker), or pass --target with a short clip of only the right person."
+        )
+    log(f"target speaker covers {share:.0%} of the speech" + (f"; next voice {second:.0%}" if second else ""))
+    return speaker.centroid(embs[members])
 
 
 def gate(c: Clip) -> str:
@@ -198,7 +243,9 @@ def select(clips: list[Clip], k: int, log: Log) -> list[Clip]:
     return chosen
 
 
-def run(voice: voices.Voice, *, k: int = 8, log: Log = print) -> voices.Voice:
+def run(
+    voice: voices.Voice, *, k: int = 8, log: Log = print, target_clip: str | None = None, pick: int | None = None
+) -> voices.Voice:
     files = [voice.dir / "sources" / s["path"] for s in voice.sources]
     if not files:
         raise ValueError(f"voice {voice.name!r} has no sources; add some with: voicesmith ingest {voice.name} <file|url>")
@@ -212,7 +259,8 @@ def run(voice: voices.Voice, *, k: int = 8, log: Log = print) -> voices.Voice:
     log(f"{len(all_clips)} candidate clips; measuring")
     for c in all_clips:
         measure(c, waves[c.source])
-    target = find_target(all_clips, consent.anchor(voice), log)
+    target_emb = speaker.embed(audio.load(target_clip, SR)) if target_clip else None
+    target = find_target(all_clips, consent.anchor(voice), log, target_emb, pick)
     sims = np.array([float(c.emb @ target) for c in all_clips])
     for c, s in zip(all_clips, sims):
         c.sim = s

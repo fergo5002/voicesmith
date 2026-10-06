@@ -295,6 +295,8 @@ def ingest(
     max_items: Annotated[int, typer.Option(help="Most items to fetch from a playlist or channel URL.")] = 25,
     refs: Annotated[int, typer.Option(help="How many reference clips to keep.")] = 8,
     reanalyse: Annotated[bool, typer.Option(help="Re-run analysis over existing sources only.")] = False,
+    target: Annotated[Path | None, typer.Option(help="A short clip of only the target speaker, to pick them out of multi-speaker audio.")] = None,
+    pick: Annotated[int | None, typer.Option(help="Choose voice N from the list ingest prints when several people speak.")] = None,
 ) -> None:
     """Add recordings of the speaker and rebuild the voice's reference clips."""
     from voicesmith import voices
@@ -317,7 +319,7 @@ def ingest(
     v.sources += added
     v.save()
     try:
-        v = pipeline.run(v, k=refs, log=_log)
+        v = pipeline.run(v, k=refs, log=_log, target_clip=str(target) if target else None, pick=pick)
     except Exception as exc:
         _fail(str(exc))
     st = v.stats

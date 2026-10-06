@@ -11,7 +11,9 @@ class Adapter:
     def __init__(self, engine: str, device: str):
         from sopro.model import SoproTTS
 
-        quant = "int8" if engine == "sopro-int8" and device == "cpu" else None
+        # int8 measured 2.4x faster than fp32 on CPU with the same similarity and WER
+        # (docs/benchmarks.md); it is CPU-only in Sopro.
+        quant = "int8" if device == "cpu" else None
         self.model = SoproTTS.from_pretrained(device=device, quantization=quant)
         self.sample_rate = int(self.model.sample_rate)
         self._ref_key = None

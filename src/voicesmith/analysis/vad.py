@@ -51,9 +51,13 @@ def speech_regions(
             vad.pop()
 
     audio = audio.astype(np.float32)
-    for i in range(0, len(audio), WINDOW * 64):
-        vad.accept_waveform(audio[i : i + WINDOW * 64])
-        drain()
+    # Feed exactly one model window at a time. Larger slices make sherpa-onnx's
+    # VAD merge everything into one region (measured: two utterances 1 s apart
+    # came back as a single 13 s region when fed 32768 samples at a time).
+    for i in range(0, len(audio), WINDOW):
+        vad.accept_waveform(audio[i : i + WINDOW])
+        if not vad.empty():
+            drain()
     vad.flush()
     drain()
     return regions

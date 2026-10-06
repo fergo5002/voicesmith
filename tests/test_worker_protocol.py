@@ -62,7 +62,8 @@ def test_stray_prints_cannot_corrupt_the_protocol(tmp_path):
     assert "hello from the engine" in proc.stderr
 
 
-def test_model_checksum_mismatch_leaves_nothing_behind(monkeypatch):
+def test_model_checksum_mismatch_leaves_nothing_behind(monkeypatch, tmp_path):
+    monkeypatch.setenv("VOICESMITH_MODELS", str(tmp_path / "models"))
     def fake_download(url, dest, expected, progress):
         dest.write_bytes(b"not the model")
     monkeypatch.setattr(models, "_download", fake_download)

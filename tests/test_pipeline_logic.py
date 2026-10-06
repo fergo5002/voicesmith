@@ -68,3 +68,57 @@ def test_pause_after_reads_punctuation():
     assert join.pause_after("Really?") == join.PAUSE["?"]
     assert join.pause_after('He said "no."') == join.PAUSE["."]
     assert join.pause_after("and then") == join.DEFAULT_PAUSE
+
+
+def _speaker_clips(rng, centre, n, start=0.0, dur=8.0):
+    out = []
+    for i in range(n):
+        e = centre + 0.04 * rng.standard_normal(centre.size)  # ~0.85 cosine to the centre, like real clips
+        e /= np.linalg.norm(e)
+        out.append(pipeline.Clip(source="pod.wav", start=start + i * 20, end=start + i * 20 + dur, text="x",
+                                 confidence=0.9, emb=e))
+    return out
+
+
+def _centres(rng, k):
+    out = []
+    for _ in range(k):
+        c = rng.standard_normal(192)
+        out.append(c / np.linalg.norm(c))
+    return out
+
+
+def test_dominant_speaker_is_found_when_clear():
+    rng = np.random.default_rng(1)
+    a, b = _centres(rng, 2)
+    clips = _speaker_clips(rng, a, 14) + _speaker_clips(rng, b, 5, start=1000)
+    target = pipeline.find_target(clips, None, lambda m: None)
+    assert float(target @ a) > 0.9 and float(target @ b) < 0.3
+
+
+def test_two_equal_hosts_without_an_anchor_refuse_to_guess():
+    rng = np.random.default_rng(2)
+    a, b = _centres(rng, 2)
+    clips = _speaker_clips(rng, a, 9) + _speaker_clips(rng, b, 10, start=1000)
+    try:
+        pipeline.find_target(clips, None, lambda m: None)
+    except pipeline.AmbiguousSpeaker as exc:
+        assert "--target" in str(exc) and "voice 2" in str(exc)
+    else:
+        raise AssertionError("must not guess between two equal speakers")
+
+
+def test_an_anchor_picks_the_minority_speaker():
+    rng = np.random.default_rng(3)
+    a, b = _centres(rng, 2)
+    clips = _speaker_clips(rng, a, 14) + _speaker_clips(rng, b, 5, start=1000)
+    target = pipeline.find_target(clips, b, lambda m: None)
+    assert float(target @ b) > 0.9
+
+
+def test_pick_chooses_a_listed_voice():
+    rng = np.random.default_rng(2)
+    a, b = _centres(rng, 2)
+    clips = _speaker_clips(rng, a, 9) + _speaker_clips(rng, b, 10, start=1000)
+    picked = pipeline.find_target(clips, None, lambda m: None, pick=2)
+    assert max(float(picked @ a), float(picked @ b)) > 0.9

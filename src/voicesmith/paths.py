@@ -35,6 +35,12 @@ def envs_dir() -> Path:
 
 
 def models_dir() -> Path:
+    """ONNX analysis models. ``VOICESMITH_MODELS`` lets several homes (or test runs) share one copy."""
+    shared = os.environ.get("VOICESMITH_MODELS")
+    if shared:
+        path = Path(shared).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
     return sub("models")
 
 

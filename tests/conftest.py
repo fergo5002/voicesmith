@@ -1,11 +1,20 @@
+import os
+from pathlib import Path
+
 import numpy as np
 import pytest
+
+# Real models are shared across test runs so slow tests download them once.
+_MODELS = os.environ.get("VOICESMITH_MODELS") or str(
+    Path(os.environ.get("VOICESMITH_HOME") or Path.home() / ".voicesmith") / "models"
+)
 
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    """Every test gets its own empty voicesmith home."""
+    """Every test gets its own empty voicesmith home (but shares downloaded models)."""
     monkeypatch.setenv("VOICESMITH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VOICESMITH_MODELS", _MODELS)
     yield tmp_path / "home"
 
 

@@ -48,6 +48,8 @@ def candidate_engines(voice: voices.Voice, requested: list[str] | None, device: 
             continue
         if "gpu-preferred" in e.tags and device == "cpu":
             continue
+        if "multilingual" in e.tags and voice.language == "en":
+            continue  # dedicated English engines exist; no need to download a multilingual model
         out.append(e.name)
     return out
 
