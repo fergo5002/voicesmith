@@ -1,10 +1,12 @@
 # voicesmith
 
-**Clone a voice on your own laptop, with the owner's permission, and let your AI talk in it.**
+**Your AI agent, in a voice you chose. Cloned on your own laptop, with the owner's say-so, and watermarked on the way out.**
 
-voicesmith turns recordings you already have (podcasts, videos, voice notes, a YouTube link) into a voice that Claude Code, Codex, Cursor or your own scripts can speak in. Nothing leaves your machine. It is fussy on purpose: every take gets transcribed and voice-matched before you hear it, and nothing renders at all until the person whose voice it is has said yes.
+Hand it recordings you already have (podcasts, videos, voice notes, a YouTube link) and it builds a voice that Claude Code, Codex, Cursor or your own scripts can speak in. Nothing leaves your machine.
 
-A real run, from a copy installed straight from this repo, on a CPU-only laptop (only the file paths are shortened):
+It's fussy on purpose. Every take is transcribed and voice-matched before you hear it, and nothing renders at all until the person whose voice it is has said yes.
+
+A real run, from a copy installed straight from this repo, on a laptop with no GPU (only the file paths are shortened):
 
 ```console
 $ voicesmith say reader1089 "This was rendered by the copy installed straight from GitHub." --engine sopro --quality fast -o live.ogg -o live.m4a
@@ -17,7 +19,7 @@ wrote live.m4a
 3.6s of audio in 43s with sopro (1 take(s)); similarity 0.874, word error 0.0%. Manifest: live.voicesmith.json
 ```
 
-## Why it's different
+## What makes it different
 
 - **It does the tedious bit for you.** Give it a podcast. It finds the speech, works out who is talking, sets aside the co-host, drops clips with music, laughter, applause or background chatter, and keeps a varied handful of the cleanest clips of the right person. If two people talk about equally and you haven't said which one you mean, it stops and asks instead of guessing.
 - **It auditions itself.** `voicesmith tune` tries each installed engine that suits your machine and language against the best clips, and keeps the best-scoring engine and clip (mostly likeness, plus getting the words right). You do that once per voice; later renders use the winner unless you ask for speed with `--quality fast`.
@@ -26,19 +28,6 @@ wrote live.m4a
 - **It signs its work.** Every file carries an AudioSeal watermark and "AI-generated" tags, and is decoded and re-checked after encoding. If either did not survive, the file is not delivered. `voicesmith verify` checks any file.
 - **Your agent can use it.** One command adds it to Claude Code or Codex as an MCP server (Cursor takes a short config entry), so your assistant can make you voice notes in a voice you chose.
 - **Built for ordinary laptops.** The core needs no GPU or PyTorch. Each engine gets the right PyTorch build for your machine (CUDA, Apple Silicon or CPU). So far it has been measured on a CPU-only Windows laptop; see [the benchmarks](docs/benchmarks.md) for honest numbers.
-
-## Give your AI a voice
-
-```bash
-uv tool install git+https://github.com/fergo5002/voicesmith    # no uv? https://docs.astral.sh/uv/
-voicesmith doctor                                               # checks everything, tells you how to fix it
-voicesmith engines install recommended                          # engine weights (several GB) download on first use
-
-claude mcp add --scope user voicesmith -- voicesmith mcp        # Claude Code
-codex mcp add voicesmith -- voicesmith mcp                      # Codex (Cursor: see below)
-```
-
-Then set up a voice (yours is the obvious first one) with the five steps below, and ask your agent for "a voice note saying the tests passed".
 
 ## Quick start
 
@@ -62,7 +51,13 @@ voicesmith tune sam
 
 # 5. Speak
 voicesmith say sam "Thanks for coming in yesterday. Here's the plan." -o note.m4a
+
+# 6. Hand it to your agent
+claude mcp add --scope user voicesmith -- voicesmith mcp    # Claude Code
+codex mcp add voicesmith -- voicesmith mcp                  # Codex (Cursor and others: see below)
 ```
+
+Then ask your agent for "a voice note saying the tests passed".
 
 Every render writes `<name>.voicesmith.json` next to the audio with the scores, the engine, reference and seed, every take that was tried and why any were rejected, and the post-encode watermark check.
 
